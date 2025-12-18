@@ -6,36 +6,35 @@ import numpy as np
 from PIL import Image, ImageOps
 import cv2
 import re
-import pandas as pd
+import gc
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="Core Data Extractor", layout="wide")
+st.set_page_config(page_title="Core Data Extractor", layout="wide", page_icon="🪪")
 
 @st.cache_resource
 def load_reader():
-    # 加载 EasyOCR 模型
+    # 初始化 EasyOCR 引擎
     return easyocr.Reader(['en'], gpu=False)
 
-# --- 2. 智能黑名单过滤引擎 ---
+# --- 2. 智能过滤与黑名单引擎 ---
 def intelligent_filter(ocr_list):
-    # A. 50 州名称及缩写黑名单
-    states_list = {
-        "ALABAMA", "AL", "ALASKA", "AK", "ARIZONA", "AZ", "ARKANSAS", "AR", "CALIFORNIA", "CA", 
-        "COLORADO", "CO", "CONNECTICUT", "CT", "DELAWARE", "DE", "FLORIDA", "FL", "GEORGIA", "GA", 
-        "HAWAII", "HI", "IDAHO", "ID", "ILLINOIS", "IL", "INDIANA", "IN", "IOWA", "IA", "KANSAS", "KS", 
-        "KENTUCKY", "KY", "LOUISIANA", "LA", "MAINE", "ME", "MARYLAND", "MD", "MASSACHUSETTS", "MA", 
-        "MICHIGAN", "MI", "MINNESOTA", "MN", "MISSISSIPPI", "MS", "MISSOURI", "MO", "MONTANA", "MT", 
-        "NEBRASKA", "NE", "NEVADA", "NV", "NEW HAMPSHIRE", "NH", "NEW JERSEY", "NJ", "NEW MEXICO", "NM", 
-        "NEW YORK", "NY", "NORTH CAROLINA", "NC", "NORTH DAKOTA", "ND", "OHIO", "OH", "OKLAHOMA", "OK", 
-        "OREGON", "OR", "PENNSYLVANIA", "PA", "RHODE ISLAND", "RI", "SOUTH CAROLINA", "SC", "SOUTH DAKOTA", "SD", 
-        "TENNESSEE", "TN", "TEXAS", "TX", "UTAH", "UT", "VERMONT", "VT", "VIRGINIA", "VA", "WASHINGTON", "WA", 
-        "WEST VIRGINIA", "WV", "WISCONSIN", "WI", "WYOMING", "WY", "DISTRICT OF COLUMBIA", "DC", "USA"
-    }
+    # A. 50 州全称黑名单 (包含常见的 "STATE OF..." 前缀)
+    full_states = [
+        "ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNIA", "COLORADO", "CONNECTICUT", 
+        "DELAWARE", "FLORIDA", "GEORGIA", "HAWAII", "IDAHO", "ILLINOIS", "INDIANA", "IOWA", 
+        "KANSAS", "KENTUCKY", "LOUISIANA", "MAINE", "MARYLAND", "MASSACHUSETTS", "MICHIGAN", 
+        "MINNESOTA", "MISSISSIPPI", "MISSOURI", "MONTANA", "NEBRASKA", "NEVADA", "NEW HAMPSHIRE", 
+        "NEW JERSEY", "NEW MEXICO", "NEW YORK", "NORTH CAROLINA", "NORTH DAKOTA", "OHIO", 
+        "OKLAHOMA", "OREGON", "PENNSYLVANIA", "RHODE ISLAND", "SOUTH CAROLINA", "SOUTH DAKOTA", 
+        "TENNESSEE", "TEXAS", "UTAH", "VERMONT", "VIRGINIA", "WASHINGTON", "WEST VIRGINIA", 
+        "WISCONSIN", "WYOMING", "DISTRICT OF COLUMBIA"
+    ]
     
-    # B. 联邦限制及法律免责词库
-    junk_phrases = [
+    # B. 其他需要隐藏的干扰词
+    hidden_phrases = [
+        "DRIVER LICENSE", "DRIVERS LICENSE", "DL", "IDENTIFICATION CARD", "ID",
         "FEDERAL LIMITS APPLY", "NOT FOR FEDERAL IDENTIFICATION", "NOT FOR REAL ID",
-        "DRIVER LICENSE", "DRIVERS LICENSE", "IDENTIFICATION CARD", "USA", "ORGAN DONOR"
+        "USA", "ORGAN DONOR", "COMMERCIAL", "CDL", "TEMPORARY", "STATE OF", "COMMONWEALTH OF"
     ]
 
     filtered_data = []
@@ -43,25 +42,32 @@ def intelligent_filter(ocr_list):
     for text in ocr_list:
         clean_text = text.strip().upper()
         
-        # --- 保护规则：如果是驾照号（通常含多位数字），直接保留 ---
+        # --- 核心保护规则：如果是驾照号（含7位以上数字），强制通过 ---
         if re.search(r'\d{7,}', clean_text):
             filtered_data.append(text)
             continue
             
-        # --- 过滤规则 1：检查是否为州名或缩写 ---
-        if clean_text in states_list:
-            continue
-            
-        # --- 过滤规则 2：检查是否包含联邦限制关键词 ---
-        is_junk = False
-        for junk in junk_phrases:
-            if junk in clean_text:
-                is_junk = True
+        # --- 过滤规则 1：隐藏州全称 ---
+        # 检查段落是否完全匹配州名，或者包含 "STATE OF [州名]"
+        is_state_name = False
+        for state in full_states:
+            if state == clean_text or f"STATE OF {state}" in clean_text or f"COMMONWEALTH OF {state}" in clean_text:
+                is_state_name = True
                 break
-        if is_junk:
+        if is_state_name:
             continue
             
-        # --- 过滤规则 3：过滤极短的无意义字符（如单个逗号或噪点） ---
+        # --- 过滤规则 2：隐藏 Driver License / DL 等干扰词 ---
+        is_hidden_phrase = False
+        for phrase in hidden_phrases:
+            # 使用边界匹配，防止误删单词内的字母（如 Midland）
+            if re.search(rf'\b{re.escape(phrase)}\b', clean_text):
+                is_hidden_phrase = True
+                break
+        if is_hidden_phrase:
+            continue
+            
+        # --- 过滤规则 3：过滤极短的干扰符 ---
         if len(clean_text) < 2 and not clean_text.isdigit():
             continue
             
@@ -70,50 +76,57 @@ def intelligent_filter(ocr_list):
     return filtered_data
 
 # --- 3. UI 交互界面 ---
-st.title("🪪 50州核心数据提取器 (智能过滤版)")
-st.markdown("该工具会自动跳过**州名**与**联邦限制说明**，仅保留个人信息与驾照号。")
+st.title("🪪 50州驾照核心数据扫描器")
+st.markdown("已自动过滤：**各州全称**、**STATE OF...**、**DRIVER LICENSE** 及 **DL** 字样。")
 
-src = st.radio("选择照片来源", ["📷 实时拍照", "📁 上传文件"], horizontal=True)
-img_source = st.camera_input("拍照") if src == "📷 实时拍照" else st.file_uploader("选择照片", type=['jpg','jpeg','png'])
+# 输入源
+src = st.radio("选择图片来源", ["📷 实时拍照识别", "📁 上传图片识别"], horizontal=True)
+img_source = st.camera_input("拍照") if src == "📷 实时拍照识别" else st.file_uploader("选择文件", type=['jpg','jpeg','png'])
 
 if img_source:
     raw_img = Image.open(img_source)
-    raw_img = ImageOps.exif_transpose(raw_img) # 自动纠正旋转
+    raw_img = ImageOps.exif_transpose(raw_img) # 自动纠正手机拍摄倾斜
     
     col_l, col_r = st.columns([1.2, 1])
     
     with col_l:
-        st.subheader("✂️ 框选文字区域")
+        st.subheader("✂️ 自由选取识别区")
+        st.info("建议：框选姓名、地址、日期所在区域，避开顶部的州标题。")
         # 自由比例裁剪
         cropped_img = st_cropper(raw_img, realtime_update=True, box_color='#FF4B4B', aspect_ratio=None)
-        st.image(cropped_img, caption="当前识别区域", use_container_width=True)
+        st.image(cropped_img, caption="待处理区域", use_container_width=True)
 
     with col_r:
-        st.subheader("📊 过滤后的核心数据")
-        if st.button("🚀 开始精准提取", type="primary", use_container_width=True):
-            with st.spinner("正在解析并过滤冗余信息..."):
-                # 图像预处理
+        st.subheader("📑 提取的核心数据")
+        if st.button("🚀 执行过滤识别", type="primary", use_container_width=True):
+            with st.spinner("神经网络正在扫描并清洗数据..."):
+                # 图像处理加速
                 roi_np = np.array(cropped_img)
                 gray = cv2.cvtColor(roi_np, cv2.COLOR_RGB2GRAY)
                 
-                # 执行 OCR (段落合并模式)
+                # 执行 OCR (段落模式)
                 reader = load_reader()
                 raw_results = reader.readtext(gray, detail=0, paragraph=True)
                 
-                # 执行智能过滤
+                # 过滤冗余信息
                 final_results = intelligent_filter(raw_results)
                 
                 if final_results:
-                    for i, item in enumerate(final_results):
-                        st.info(f"数据段 {i+1}: **{item}**")
+                    # 结果展示
+                    for item in final_results:
+                        st.code(item, language=None)
                     
-                    # 生成可复制的文本块
-                    st.text_area("一键复制结果", "\n".join(final_results), height=150)
+                    st.text_area("批量结果（可复制）", "\n".join(final_results), height=200)
                 else:
-                    st.warning("未检测到有效核心数据，请调整裁剪框。")
+                    st.warning("未检测到有效个人数据，请确保裁剪框内包含文字。")
+                
+                # 显式内存清理
+                del roi_np, gray
+                gc.collect()
 
         st.markdown("""
-        **过滤逻辑说明：**
-        * **保留**：姓名、地址、日期、驾照号、分类(Class)等。
-        * **跳过**：50州名称(如 CALIFORNIA)、联邦限制语(如 REAL ID 字样)、证件标题。
+        **当前过滤策略：**
+        1. **自动跳过**：如 PENNSYLVANIA, NEW YORK, STATE OF CALIFORNIA 等。
+        2. **自动隐藏**：如 DL, DRIVER LICENSE, USA, ORGAN DONOR。
+        3. **强制保留**：任何包含 7 位以上连续数字的行（视为驾照号或档案号）。
         """)
