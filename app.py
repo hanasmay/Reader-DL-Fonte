@@ -13,24 +13,22 @@ st.set_page_config(page_title="Core Data Extractor", layout="wide", page_icon="�
 
 @st.cache_resource
 def load_reader():
-    # 初始化 EasyOCR 引擎
     return easyocr.Reader(['en'], gpu=False)
 
-# --- 2. 智能过滤与黑名单引擎 ---
+# --- 2. 智能过滤引擎 ---
 def intelligent_filter(ocr_list):
-    # A. 50 州全称黑名单 (包含常见的 "STATE OF..." 前缀)
-    full_states = [
+    # 50 州全称黑名单
+    full_states = {
         "ALABAMA", "ALASKA", "ARIZONA", "ARKANSAS", "CALIFORNIA", "COLORADO", "CONNECTICUT", 
         "DELAWARE", "FLORIDA", "GEORGIA", "HAWAII", "IDAHO", "ILLINOIS", "INDIANA", "IOWA", 
         "KANSAS", "KENTUCKY", "LOUISIANA", "MAINE", "MARYLAND", "MASSACHUSETTS", "MICHIGAN", 
         "MINNESOTA", "MISSISSIPPI", "MISSOURI", "MONTANA", "NEBRASKA", "NEVADA", "NEW HAMPSHIRE", 
         "NEW JERSEY", "NEW MEXICO", "NEW YORK", "NORTH CAROLINA", "NORTH DAKOTA", "OHIO", 
-        "OKLAHOMA", "OREGON", "PENNSYLVANIA", "RHODE ISLAND", "SOUTH CAROLINA", "SOUTH DAKOTA", 
-        "TENNESSEE", "TEXAS", "UTAH", "VERMONT", "VIRGINIA", "WASHINGTON", "WEST VIRGINIA", 
-        "WISCONSIN", "WYOMING", "DISTRICT OF COLUMBIA"
-    ]
+        "OKLAHOMA", "OREGON", "PENNSYLVANIA", "PA", "RHODE ISLAND", "RI", "SOUTH CAROLINA", "SC", 
+        "SOUTH DAKOTA", "SD", "TENNESSEE", "TEXAS", "UTAH", "VERMONT", "VIRGINIA", "WASHINGTON", 
+        "WEST VIRGINIA", "WV", "WISCONSIN", "WI", "WYOMING", "DISTRICT OF COLUMBIA"
+    }
     
-    # B. 其他需要隐藏的干扰词
     hidden_phrases = [
         "DRIVER LICENSE", "DRIVERS LICENSE", "DL", "IDENTIFICATION CARD", "ID",
         "FEDERAL LIMITS APPLY", "NOT FOR FEDERAL IDENTIFICATION", "NOT FOR REAL ID",
@@ -38,36 +36,31 @@ def intelligent_filter(ocr_list):
     ]
 
     filtered_data = []
-    
     for text in ocr_list:
         clean_text = text.strip().upper()
         
-        # --- 核心保护规则：如果是驾照号（含7位以上数字），强制通过 ---
+        # 保护规则：含长数字（驾照号）必保留
         if re.search(r'\d{7,}', clean_text):
             filtered_data.append(text)
             continue
             
-        # --- 过滤规则 1：隐藏州全称 ---
-        # 检查段落是否完全匹配州名，或者包含 "STATE OF [州名]"
-        is_state_name = False
+        # 过滤州全称
+        is_state = False
         for state in full_states:
             if state == clean_text or f"STATE OF {state}" in clean_text or f"COMMONWEALTH OF {state}" in clean_text:
-                is_state_name = True
+                is_state = True
                 break
-        if is_state_name:
-            continue
+        if is_state: continue
             
-        # --- 过滤规则 2：隐藏 Driver License / DL 等干扰词 ---
-        is_hidden_phrase = False
+        # 过滤干扰词（使用正则边界匹配避免误伤）
+        is_hidden = False
         for phrase in hidden_phrases:
-            # 使用边界匹配，防止误删单词内的字母（如 Midland）
             if re.search(rf'\b{re.escape(phrase)}\b', clean_text):
-                is_hidden_phrase = True
+                is_hidden = True
                 break
-        if is_hidden_phrase:
-            continue
+        if is_hidden: continue
             
-        # --- 过滤规则 3：过滤极短的干扰符 ---
+        # 过滤过短字符
         if len(clean_text) < 2 and not clean_text.isdigit():
             continue
             
@@ -76,57 +69,59 @@ def intelligent_filter(ocr_list):
     return filtered_data
 
 # --- 3. UI 交互界面 ---
-st.title("🪪 50州驾照核心数据扫描器")
-st.markdown("已自动过滤：**各州全称**、**STATE OF...**、**DRIVER LICENSE** 及 **DL** 字样。")
+st.title("🪪 50州驾照核心数据扫描终端")
+st.markdown("该版本将**逐个字段输出**清洗后的数据，并附带**完整汇总**。")
 
 # 输入源
-src = st.radio("选择图片来源", ["📷 实时拍照识别", "📁 上传图片识别"], horizontal=True)
-img_source = st.camera_input("拍照") if src == "📷 实时拍照识别" else st.file_uploader("选择文件", type=['jpg','jpeg','png'])
+src = st.radio("选择图片来源", ["📷 拍照识别", "📁 上传图片"], horizontal=True)
+img_source = st.camera_input("拍照") if src == "📷 拍照识别" else st.file_uploader("上传文件", type=['jpg','jpeg','png'])
 
 if img_source:
     raw_img = Image.open(img_source)
-    raw_img = ImageOps.exif_transpose(raw_img) # 自动纠正手机拍摄倾斜
+    raw_img = ImageOps.exif_transpose(raw_img)
     
     col_l, col_r = st.columns([1.2, 1])
     
     with col_l:
-        st.subheader("✂️ 自由选取识别区")
-        st.info("建议：框选姓名、地址、日期所在区域，避开顶部的州标题。")
-        # 自由比例裁剪
+        st.subheader("✂️ 裁剪核心文字区")
         cropped_img = st_cropper(raw_img, realtime_update=True, box_color='#FF4B4B', aspect_ratio=None)
-        st.image(cropped_img, caption="待处理区域", use_container_width=True)
+        st.image(cropped_img, caption="当前扫描区域", use_container_width=True)
 
     with col_r:
-        st.subheader("📑 提取的核心数据")
-        if st.button("🚀 执行过滤识别", type="primary", use_container_width=True):
-            with st.spinner("神经网络正在扫描并清洗数据..."):
-                # 图像处理加速
+        st.subheader("📑 字段解析结果")
+        if st.button("🚀 开始精准提取", type="primary", use_container_width=True):
+            with st.spinner("正在逐个字段清洗数据..."):
+                # 图像处理
                 roi_np = np.array(cropped_img)
                 gray = cv2.cvtColor(roi_np, cv2.COLOR_RGB2GRAY)
                 
-                # 执行 OCR (段落模式)
+                # 执行 OCR
                 reader = load_reader()
                 raw_results = reader.readtext(gray, detail=0, paragraph=True)
                 
-                # 过滤冗余信息
+                # 执行智能过滤
                 final_results = intelligent_filter(raw_results)
                 
                 if final_results:
-                    # 结果展示
-                    for item in final_results:
-                        st.code(item, language=None)
+                    # --- 逐个字段输出 ---
+                    for i, item in enumerate(final_results):
+                        # 使用 columns 让输出更有条理
+                        c_idx, c_val = st.columns([1, 4])
+                        c_idx.markdown(f"**字段 {i+1}**")
+                        c_val.info(item)
                     
-                    st.text_area("批量结果（可复制）", "\n".join(final_results), height=200)
+                    st.divider()
+                    
+                    # --- 完整数据汇总输出 ---
+                    st.subheader("📋 完整数据汇总")
+                    full_text = "\n".join(final_results)
+                    st.text_area("点击下方框内内容可直接全选复制", full_text, height=200)
+                    
+                    st.success(f"共提取到 {len(final_results)} 条核心数据段。")
                 else:
-                    st.warning("未检测到有效个人数据，请确保裁剪框内包含文字。")
+                    st.warning("未检测到有效数据，请确保红框覆盖了姓名、地址或驾照号区域。")
                 
-                # 显式内存清理
                 del roi_np, gray
                 gc.collect()
 
-        st.markdown("""
-        **当前过滤策略：**
-        1. **自动跳过**：如 PENNSYLVANIA, NEW YORK, STATE OF CALIFORNIA 等。
-        2. **自动隐藏**：如 DL, DRIVER LICENSE, USA, ORGAN DONOR。
-        3. **强制保留**：任何包含 7 位以上连续数字的行（视为驾照号或档案号）。
-        """)
+        st.info("💡 建议：如果某个字段被错误隐藏，请尝试在裁剪时多包含一点周边文字。")
