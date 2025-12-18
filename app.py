@@ -8,112 +8,112 @@ import cv2
 import re
 import pandas as pd
 
-# --- 1. 配置 ---
-st.set_page_config(page_title="自由裁剪扫描终端", layout="wide")
+# --- 1. 基础配置 ---
+st.set_page_config(page_title="Core Data Extractor", layout="wide")
 
 @st.cache_resource
 def load_reader():
-    # 使用 CPU 模式
+    # 加载 EasyOCR 模型
     return easyocr.Reader(['en'], gpu=False)
 
-# --- 2. 字段解析算法 ---
-def universal_parse(text_list):
-    full = " ".join(text_list).upper()
-    # 清理特殊符号
-    clean = re.sub(r'[^A-Z0-9\s/]', '', full)
-    
-    res = {
-        "DAQ (证件号)": "未匹配",
-        "DCS (姓氏-1)": "未匹配",
-        "DAC (名字-2)": "未匹配",
-        "DBB (生日-DOB)": "未匹配",
-        "DBA (过期-EXP)": "未匹配",
-        "DAG (地址-8)": "未匹配"
+# --- 2. 智能黑名单过滤引擎 ---
+def intelligent_filter(ocr_list):
+    # A. 50 州名称及缩写黑名单
+    states_list = {
+        "ALABAMA", "AL", "ALASKA", "AK", "ARIZONA", "AZ", "ARKANSAS", "AR", "CALIFORNIA", "CA", 
+        "COLORADO", "CO", "CONNECTICUT", "CT", "DELAWARE", "DE", "FLORIDA", "FL", "GEORGIA", "GA", 
+        "HAWAII", "HI", "IDAHO", "ID", "ILLINOIS", "IL", "INDIANA", "IN", "IOWA", "IA", "KANSAS", "KS", 
+        "KENTUCKY", "KY", "LOUISIANA", "LA", "MAINE", "ME", "MARYLAND", "MD", "MASSACHUSETTS", "MA", 
+        "MICHIGAN", "MI", "MINNESOTA", "MN", "MISSISSIPPI", "MS", "MISSOURI", "MO", "MONTANA", "MT", 
+        "NEBRASKA", "NE", "NEVADA", "NV", "NEW HAMPSHIRE", "NH", "NEW JERSEY", "NJ", "NEW MEXICO", "NM", 
+        "NEW YORK", "NY", "NORTH CAROLINA", "NC", "NORTH DAKOTA", "ND", "OHIO", "OH", "OKLAHOMA", "OK", 
+        "OREGON", "OR", "PENNSYLVANIA", "PA", "RHODE ISLAND", "RI", "SOUTH CAROLINA", "SC", "SOUTH DAKOTA", "SD", 
+        "TENNESSEE", "TN", "TEXAS", "TX", "UTAH", "UT", "VERMONT", "VT", "VIRGINIA", "VA", "WASHINGTON", "WA", 
+        "WEST VIRGINIA", "WV", "WISCONSIN", "WI", "WYOMING", "WY", "DISTRICT OF COLUMBIA", "DC", "USA"
     }
     
-    # 提取证件号 (8-10位数字)
-    id_m = re.search(r'([0-9]{8,10})', clean)
-    if id_m: res["DAQ (证件号)"] = id_m.group(1)
+    # B. 联邦限制及法律免责词库
+    junk_phrases = [
+        "FEDERAL LIMITS APPLY", "NOT FOR FEDERAL IDENTIFICATION", "NOT FOR REAL ID",
+        "DRIVER LICENSE", "DRIVERS LICENSE", "IDENTIFICATION CARD", "USA", "ORGAN DONOR"
+    ]
+
+    filtered_data = []
     
-    # 提取所有日期
-    dates = re.findall(r'(\d{2}/\d{2}/\d{4})', clean)
-    if len(dates) >= 1: res["DBA (过期-EXP)"] = dates[0]
-    if len(dates) >= 2: res["DBB (生日-DOB)"] = dates[1]
-    
-    # 提取姓名 (基于 1 和 2 标签)
-    ln_m = re.search(r'(?:1|LN)\s+([A-Z]+)', clean)
-    if ln_m: res["DCS (姓氏-1)"] = ln_m.group(1)
-    fn_m = re.search(r'(?:2|FN)\s+([A-Z]+)', clean)
-    if fn_m: res["DAC (名字-2)"] = fn_m.group(1)
-    
-    # 提取地址
-    addr_m = re.search(r'8\s+([0-9]{1,5}\s[A-Z0-9\s]{10,})', clean)
-    if addr_m: res["DAG (地址-8)"] = addr_m.group(1).strip()[:35]
+    for text in ocr_list:
+        clean_text = text.strip().upper()
         
-    return res
+        # --- 保护规则：如果是驾照号（通常含多位数字），直接保留 ---
+        if re.search(r'\d{7,}', clean_text):
+            filtered_data.append(text)
+            continue
+            
+        # --- 过滤规则 1：检查是否为州名或缩写 ---
+        if clean_text in states_list:
+            continue
+            
+        # --- 过滤规则 2：检查是否包含联邦限制关键词 ---
+        is_junk = False
+        for junk in junk_phrases:
+            if junk in clean_text:
+                is_junk = True
+                break
+        if is_junk:
+            continue
+            
+        # --- 过滤规则 3：过滤极短的无意义字符（如单个逗号或噪点） ---
+        if len(clean_text) < 2 and not clean_text.isdigit():
+            continue
+            
+        filtered_data.append(text)
+        
+    return filtered_data
 
-# --- 3. UI 界面 ---
-st.title("✂️ 自由裁剪识别终端 (支持横屏/摄像头)")
+# --- 3. UI 交互界面 ---
+st.title("🪪 50州核心数据提取器 (智能过滤版)")
+st.markdown("该工具会自动跳过**州名**与**联邦限制说明**，仅保留个人信息与驾照号。")
 
-# 输入源切换
-src_mode = st.radio("选择输入方式", ["📷 摄像头拍照", "📁 上传图片"], horizontal=True)
-
-img_source = None
-if src_mode == "📷 摄像头拍照":
-    img_source = st.camera_input("请对准证件拍摄")
-else:
-    img_source = st.file_uploader("选择照片文件", type=['jpg', 'jpeg', 'png'])
+src = st.radio("选择照片来源", ["📷 实时拍照", "📁 上传文件"], horizontal=True)
+img_source = st.camera_input("拍照") if src == "📷 实时拍照" else st.file_uploader("选择照片", type=['jpg','jpeg','png'])
 
 if img_source:
-    # 加载图片并校正旋转方向 (针对手机拍照)
     raw_img = Image.open(img_source)
-    raw_img = ImageOps.exif_transpose(raw_img)
+    raw_img = ImageOps.exif_transpose(raw_img) # 自动纠正旋转
     
-    col_left, col_right = st.columns([1, 1])
+    col_l, col_r = st.columns([1.2, 1])
     
-    with col_left:
-        st.subheader("调整选取框")
-        st.info("拖动红框边缘：自由调整大小 (已解除比例锁定)")
-        
-        # 核心组件：手动裁剪
-        # aspect_ratio=None 允许自由调整比例
-        cropped_img = st_cropper(
-            raw_img, 
-            realtime_update=True, 
-            box_color='#FF0000', 
-            aspect_ratio=None,
-            key="cropper"
-        )
-        
-        st.write("当前选取预览：")
-        st.image(cropped_img, use_container_width=True)
+    with col_l:
+        st.subheader("✂️ 框选文字区域")
+        # 自由比例裁剪
+        cropped_img = st_cropper(raw_img, realtime_update=True, box_color='#FF4B4B', aspect_ratio=None)
+        st.image(cropped_img, caption="当前识别区域", use_container_width=True)
 
-    with col_right:
-        st.subheader("识别解析结果")
-        if st.button("🚀 识别当前选取区域", type="primary", use_container_width=True):
-            with st.spinner("正在精准解析..."):
-                # 转换格式
+    with col_r:
+        st.subheader("📊 过滤后的核心数据")
+        if st.button("🚀 开始精准提取", type="primary", use_container_width=True):
+            with st.spinner("正在解析并过滤冗余信息..."):
+                # 图像预处理
                 roi_np = np.array(cropped_img)
-                
-                # 预处理：灰度化 + 锐化
                 gray = cv2.cvtColor(roi_np, cv2.COLOR_RGB2GRAY)
-                # 使用自适应直方图均衡化增加对比度
-                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-                final_roi = clahe.apply(gray)
                 
-                # OCR 识别
+                # 执行 OCR (段落合并模式)
                 reader = load_reader()
-                # 因为图片已手动裁剪，关闭自动对比度微调以极速运行
-                results = reader.readtext(final_roi, detail=0, paragraph=True, adjust_contrast=0)
-                data = universal_parse(results)
+                raw_results = reader.readtext(gray, detail=0, paragraph=True)
                 
-                # 展示表格
-                st.table(pd.DataFrame(list(data.items()), columns=["字段标签", "解析内容"]))
+                # 执行智能过滤
+                final_results = intelligent_filter(raw_results)
                 
-                with st.expander("查看底层文字流"):
-                    st.write(results)
-            
-            st.success("识别耗时极短，因为只处理了裁剪区域！")
+                if final_results:
+                    for i, item in enumerate(final_results):
+                        st.info(f"数据段 {i+1}: **{item}**")
+                    
+                    # 生成可复制的文本块
+                    st.text_area("一键复制结果", "\n".join(final_results), height=150)
+                else:
+                    st.warning("未检测到有效核心数据，请调整裁剪框。")
 
-else:
-    st.info("💡 请先拍照或上传图片，然后在红框内选择文字密集的区域进行识别。")
+        st.markdown("""
+        **过滤逻辑说明：**
+        * **保留**：姓名、地址、日期、驾照号、分类(Class)等。
+        * **跳过**：50州名称(如 CALIFORNIA)、联邦限制语(如 REAL ID 字样)、证件标题。
+        """)
