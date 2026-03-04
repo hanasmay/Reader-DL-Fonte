@@ -1,6 +1,5 @@
 streamlit
 streamlit-cropper
-streamlit-paste-button
 easyocr
 opencv-python-headless
 Pillow
