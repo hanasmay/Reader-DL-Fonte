@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 from streamlit_cropper import st_cropper
-import easyocr
 import numpy as np
 from PIL import Image, ImageOps
 import cv2
