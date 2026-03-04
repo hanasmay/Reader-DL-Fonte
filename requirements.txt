@@ -5,3 +5,4 @@ Pillow
 opencv-python-headless
 zxing-cpp
 pdf417
+easyocr
