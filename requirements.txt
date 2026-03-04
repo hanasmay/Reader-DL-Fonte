@@ -1,7 +1,7 @@
 streamlit
-easyocr
-opencv-python-headless
-pillow
 numpy
 pandas
-streamlit-cropper
+Pillow
+opencv-python-headless
+zxing-cpp
+pdf417
