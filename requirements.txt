@@ -4,3 +4,4 @@ easyocr
 opencv-python-headless
 pdf417
 Pillow
+streamlit-paste-button
